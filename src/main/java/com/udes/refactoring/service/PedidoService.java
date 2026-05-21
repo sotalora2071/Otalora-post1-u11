@@ -1,62 +1,54 @@
 package com.udes.refactoring.service;
 
+import com.udes.refactoring.model.CodigoDescuento;
+import com.udes.refactoring.model.DatosCliente;
+import com.udes.refactoring.model.LineaPedido;
 import com.udes.refactoring.model.Pedido;
-import com.udes.refactoring.model.Producto;
 import com.udes.refactoring.repository.PedidoRepository;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 
 /**
- * Servicio con code smells deliberados:
- * - Large Class (demasiadas responsabilidades en una sola clase)
- * - Long Method (procesarPedido hace validacion, calculo, descuento, notificacion y persistencia)
- * - Primitive Obsession (12 parametros primitivos en lugar de objetos de dominio)
- * - Data Clump (los datos del cliente viajan siempre juntos)
- * - Field Injection (uso de @Autowired en campos en lugar de constructor)
+ * Servicio refactorizado aplicando:
+ *  - Extract Method: procesarPedido se divide en metodos privados con responsabilidad unica.
+ *  - Extract Class: la notificacion se delega a NotificacionService.
+ *  - Value Objects: DatosCliente, LineaPedido, CodigoDescuento eliminan el Primitive Obsession.
+ *  - Constructor Injection: reemplaza el @Autowired en campo.
+ *
+ * CC esperada de procesarPedido: 1 (solo orquesta llamadas).
  */
 @Service
 public class PedidoService {
 
-    @Autowired // Code Smell: inyeccion en campo
-    private PedidoRepository repo;
+    private final PedidoRepository repo;
+    private final NotificacionService notificacion;
 
-    // Long Method: valida, calcula, notifica y persiste en un solo metodo
-    public String procesarPedido(Long clienteId, String clienteNombre,
-                                  String clienteEmail, String clienteTelefono,
-                                  String clienteDireccion, String clienteCiudad,
-                                  String clienteCodigoPostal, List<Long> productosIds,
-                                  List<Integer> cantidades, String metodoPago,
-                                  boolean esUrgente, String codigoDescuento) {
+    public PedidoService(PedidoRepository repo, NotificacionService notificacion) {
+        this.repo = repo;
+        this.notificacion = notificacion;
+    }
 
-        // Validacion del cliente (deberia ser metodo separado)
-        if (clienteId == null || clienteNombre == null
-                || clienteNombre.isBlank() || clienteEmail == null
-                || !clienteEmail.contains("@")) {
-            return "ERROR_CLIENTE";
-        }
+    public String procesarPedido(DatosCliente cliente, List<LineaPedido> lineas,
+                                  boolean esUrgente, CodigoDescuento descuento) {
+        double total = calcularTotal(lineas);
+        double totalConDescuento = aplicarDescuento(total, descuento);
+        notificacion.notificarPedido(cliente, esUrgente);
+        return persistirPedido(cliente, totalConDescuento);
+    }
 
-        // Calculo de total (Long Method smell)
-        double total = 0;
-        for (int i = 0; i < productosIds.size(); i++) {
-            Producto p = repo.findProductoById(productosIds.get(i));
-            if (p == null) return "ERROR_PRODUCTO";
-            total += p.getPrecio() * cantidades.get(i);
-        }
+    private double calcularTotal(List<LineaPedido> lineas) {
+        return lineas.stream()
+                .mapToDouble(LineaPedido::getSubtotal)
+                .sum();
+    }
 
-        // Descuento (logica de negocio mezclada)
-        if (codigoDescuento != null && codigoDescuento.equals("VIP10")) {
-            total = total * 0.90;
-        } else if (codigoDescuento != null && codigoDescuento.equals("NEW20")) {
-            total = total * 0.80;
-        }
+    private double aplicarDescuento(double total, CodigoDescuento descuento) {
+        return total * (1 - descuento.getPorcentaje());
+    }
 
-        // Notificacion (responsabilidad ajena)
-        System.out.println("Enviando email a: " + clienteEmail);
-        System.out.println("Pedido urgente: " + esUrgente);
-
-        Pedido pedido = new Pedido(clienteId, clienteNombre, total);
+    private String persistirPedido(DatosCliente cliente, double total) {
+        Pedido pedido = new Pedido(cliente.getId(), cliente.getNombre(), total);
         return "OK_" + repo.save(pedido).getId();
     }
 }
